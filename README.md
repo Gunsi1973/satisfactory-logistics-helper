@@ -92,6 +92,7 @@ unloaded on **platform 3** at the destination. This tool is built on that rule:
 | **Deliveries** | Destination slot (same slot number at the destination station) | **Source slot, destination station, amount per minute**, train (optional), note |
 | **Products** | New product names seen in the game are added | – |
 | **Trains** | Name, timetable, current stop, cargo per wagon | – |
+| **Trucks, drones, truck stations, drone ports** | Listed for information: status, inventory, fuel, drone pairing | – (not part of the planning, see [Limitations](#limitations)) |
 
 **In short:** build your stations in the game and set each platform to
 Loading or Unloading. In Grist you then only add deliveries and the amounts.
@@ -160,7 +161,7 @@ deliveries stay attached. Extra platforms appear as new slots.
 | **Deliveries** | All deliveries. This is where you add new ones. |
 | **Slots** | All slots of all stations, with game content, amounts, balance and checks. |
 | **Products** | Per product: total production, demand and transported amount, and which stations export it. |
-| **Game (FRM)** | Sync status (last successful read) and all trains with timetable and cargo per wagon (wagon number = slot number). |
+| **Game (FRM)** | Sync status (last successful read). All vehicles: trains with timetable and cargo per wagon (wagon number = slot number), trucks with fuel and the truck station they stand at, drones with their port pairing. All truck stations and drone ports with inventory and fuel. |
 
 Columns marked **(calculated)** are formulas. **Don't type into them.** In
 Grist, editing a formula cell changes the formula for *every* row. The
@@ -364,6 +365,11 @@ normal user; deleting needs root.
 - **An empty platform has no product.** The game has no product filter per
   platform; the product is only known once something is loaded. Pre-fill the
   load product by hand if needed.
+- **Trucks and drones are listed, not planned.** Deliveries and checks cover
+  trains only. FRM does not report whether a truck station loads or unloads
+  (it reports *Idle/Transferring* instead) and has no truck routes, so the
+  planning model can't use them yet. Drone ports report their pairing and
+  inventories, which may allow drone deliveries later.
 - **Platforms on both sides of the station building** break the slot
   numbering.
 - **The overview shows 12 slots per station.** Longer stations are still

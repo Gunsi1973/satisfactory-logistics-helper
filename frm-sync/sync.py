@@ -8,7 +8,8 @@ Monitoring (FRM) mod and maintains these Grist tables:
   Slots        Station, Slot, Mode, Content, Stock, Load_Status, In_Game,
                Game_ID and - only for Load with exactly one product - Load_Product
   Products     product names seen in the game are added
-  Game_Trains  fully reconciled on every run
+  Game_Vehicles  trains, trucks, drones - fully reconciled on every run
+  Game_Ports     truck stations and drone ports - for information only
   Sync_Status  one row with status and timestamps
 
 Never touched: Deliveries, and the manual fields Amount and Note.
@@ -189,12 +190,65 @@ def transform(stations, trains):
             inv = inventory(v.get("Inventory"))
             parts.append("%d: %s" % (i, ", ".join("%s %g" % (k, n) for k, n in sorted(inv.items())) or "empty"))
         train_rows.append({
-            "Name": t.get("Name") or "", "Game_ID": t["ID"],
-            "Timetable": u" \u2192 ".join(x.get("StationName", "?") for x in t.get("TimeTable") or []),
+            "Type": "Train", "Name": t.get("Name") or "", "Game_ID": t["ID"],
+            "Route": u" \u2192 ".join(x.get("StationName", "?") for x in t.get("TimeTable") or []),
             "Status": t.get("Status") or "", "Current_Stop": t.get("TrainStation") or "",
-            "Wagons": "\n".join(parts),
+            "Cargo": "\n".join(parts), "Fuel": "",
         })
     return result, train_rows
+
+
+def fmt_items(items):
+    inv = inventory(items)
+    return ", ".join("%s %g" % (k, n) for k, n in sorted(inv.items()))
+
+
+def transform_other(truck_stations, vehicles, drone_ports, drones):
+    """Trucks, drones and their stations - listed for information only.
+
+    Returns (vehicle_rows, port_rows) for Game_Vehicles and Game_Ports.
+    FRM limits: truck stations report Idle/Transferring instead of
+    Loading/Unloading, and trucks have no route information.
+    """
+    ports, vehicles_out = [], []
+    for s in truck_stations:
+        ports.append({
+            "Type": "Truck station", "Name": s.get("Name") or "", "Game_ID": s["ID"], "Paired_With": "",
+            "Status": " / ".join(x for x in (s.get("StationStatus"), s.get("LoadMode")) if x),
+            "Inventory": fmt_items(s.get("Inventory")), "Received": "",
+            "Fuel": fmt_items(s.get("FuelInventory")), "Est_Rate": None,
+        })
+    for s in drone_ports:
+        ports.append({
+            "Type": "Drone port", "Name": s.get("Name") or "", "Game_ID": s["ID"],
+            "Paired_With": s.get("PairedStation") or "", "Status": s.get("DroneStatus") or "",
+            "Inventory": fmt_items(s.get("InputInventory")), "Received": fmt_items(s.get("OutputInventory")),
+            "Fuel": fmt_items(s.get("FuelInventory")), "Est_Rate": s.get("EstTotalTransRate"),
+        })
+    for v in vehicles:
+        vx, vy = v["location"]["x"], v["location"]["y"]
+        near = [s["Name"] for s in truck_stations
+                if math.hypot(s["location"]["x"] - vx, s["location"]["y"] - vy) < 3000]
+        status = "Autopilot" if v.get("Autopilot") else "Manual"
+        if v.get("AutoPilotStatus") not in (None, "", "None"):
+            status += " (%s)" % v["AutoPilotStatus"]
+        if v.get("HasFuel") is False:
+            status += ", no fuel"
+        vehicles_out.append({
+            "Type": v.get("Name") or v.get("ClassName") or "Vehicle", "Name": v.get("Name") or "",
+            "Game_ID": v["ID"], "Route": "", "Status": status,
+            "Current_Stop": ("at " + near[0]) if near else "",
+            "Cargo": fmt_items(v.get("Inventory")) or "empty", "Fuel": fmt_items(v.get("FuelInventory")),
+        })
+    for d in drones:
+        vehicles_out.append({
+            "Type": "Drone", "Name": "Drone (%s)" % (d.get("HomeStation") or "?"), "Game_ID": d["ID"],
+            "Route": u"%s \u21c4 %s" % (d.get("HomeStation") or "?", d.get("PairedStation") or "not paired"),
+            "Status": d.get("CurrentFlyingMode") or "",
+            "Current_Stop": (u"\u2192 " + d["CurrentDestination"]) if d.get("CurrentDestination") else "",
+            "Cargo": "", "Fuel": "",
+        })
+    return vehicles_out, ports
 
 
 # ---------------------------------------------------------------------------
@@ -282,12 +336,21 @@ def retire_stations(game, existing):
     return len(gone)
 
 
-def sync_trains(rows):
-    existing = {r["fields"]["Game_ID"]: r["id"] for r in records("Game_Trains")}
+def sync_by_game_id(table, rows):
+    """Full reconcile of a pure game table (no manual data) keyed by Game_ID."""
+    existing = {r["fields"]["Game_ID"]: r["id"] for r in records(table)}
     want = {r["Game_ID"] for r in rows}
-    add("Game_Trains", [r for r in rows if r["Game_ID"] not in existing])
-    update("Game_Trains", [(existing[r["Game_ID"]], r) for r in rows if r["Game_ID"] in existing])
-    delete("Game_Trains", [rid for gid, rid in existing.items() if gid not in want])
+    add(table, [r for r in rows if r["Game_ID"] not in existing])
+    update(table, [(existing[r["Game_ID"]], r) for r in rows if r["Game_ID"] in existing])
+    delete(table, [rid for gid, rid in existing.items() if gid not in want])
+
+
+def frm_optional(endpoint):
+    """Endpoints for trucks and drones: missing or failing ones just yield an empty list."""
+    try:
+        return frm(endpoint) or []
+    except (urllib.error.URLError, OSError, ValueError):
+        return []
 
 
 def set_status(status, success):
@@ -318,13 +381,18 @@ def sync_once():
         return
     now = time.time()
     game, train_rows = transform(stations, trains or [])
+    other_vehicles, port_rows = transform_other(frm_optional("getTruckStation"), frm_optional("getVehicles"),
+                                                frm_optional("getDroneStation"), frm_optional("getDrone"))
     products = sync_products(game)
     station_ids, existing_stations = sync_stations(game, now)
     added, retired = sync_slots(game, station_ids, products)
     gone = retire_stations(game, existing_stations)
-    sync_trains(train_rows)
+    sync_by_game_id("Game_Vehicles", train_rows + other_vehicles)
+    sync_by_game_id("Game_Ports", port_rows)
     n_slots = sum(len(s["platforms"]) for s in game.values())
     msg = "OK: %d stations, %d platforms, %d trains" % (len(game), n_slots, len(train_rows))
+    if other_vehicles or port_rows:
+        msg += ", %d other vehicles, %d truck stations/drone ports" % (len(other_vehicles), len(port_rows))
     extra = []
     if added:
         extra.append("%d new slots" % added)
@@ -371,6 +439,8 @@ def main():
 if __name__ == "__main__":
     if "--dry-run" in sys.argv:
         g, t = transform(frm("getTrainStation"), frm("getTrains"))
-        print(json.dumps({"stations": g, "trains": t}, indent=1, ensure_ascii=False))
+        ov, po = transform_other(frm_optional("getTruckStation"), frm_optional("getVehicles"),
+                                 frm_optional("getDroneStation"), frm_optional("getDrone"))
+        print(json.dumps({"stations": g, "vehicles": t + ov, "ports": po}, indent=1, ensure_ascii=False))
     else:
         main()
