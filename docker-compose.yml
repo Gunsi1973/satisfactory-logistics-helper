@@ -1,23 +1,25 @@
-# Version: 2026-10-03
-# Satisfactory Logistics Helper - Grist + FRM-Sync
-# Host: lokal, auf dem Rechner mit dem Spiel oder im selben Netz
-# Grist - relationale Tabelle fuer das Satisfactory-Bahnhof-Tracking
+# Satisfactory Logistics Helper - Grist + FRM sync
 #
-# Einzelbenutzer-Betrieb ohne Login: GRIST_DEFAULT_EMAIL ordnet jede
-# Anfrage ohne Anmeldedaten diesem Benutzer zu, GRIST_IN_SERVICE=true
-# ueberspringt den Quick-Setup-Assistenten. Deshalb ist der Port per
-# Default nur an 127.0.0.1 gebunden. Wer von einem anderen Geraet im LAN
-# zugreifen will, setzt GRIST_BIND in der .env auf die LAN-IP - dann hat
-# aber jeder im LAN Vollzugriff.
+# Grist (relational spreadsheet) holds the plan; frm-sync reads the live game
+# state from the Ficsit Remote Monitoring (FRM) mod and writes it into Grist.
 #
-# Image grist-oss: nur der Open-Source-Teil, ohne die inaktiven
-# Erweiterungen der Vollversion. Version fest gepinnt, weil Grist beim
-# Start Migrationen auf der Home-DB ausfuehrt (nur vorwaerts).
+# Single-user mode without login: GRIST_DEFAULT_EMAIL is used for every request
+# without credentials, GRIST_IN_SERVICE=true skips the quick-setup wizard.
+# That is why the port is bound to 127.0.0.1 by default. Setting GRIST_BIND to a
+# LAN IP gives everyone on the LAN full access.
 #
-# Daten: ./persist enthaelt home.sqlite3 (Benutzer, Workspaces) und unter
-# docs/ die eigentlichen Dokumente als *.grist (SQLite). Fuer ein Backup
-# reicht eine Kopie von ./persist bei gestopptem Container, oder im UI
-# "Download -> Dokument herunterladen".
+# Image grist-oss: open-source part only. The version is pinned because Grist
+# migrates its home database on start (forward only).
+#
+# Data: ./persist holds home.sqlite3 (users, workspaces) and docs/*.grist (the
+# documents, plain SQLite). Backup: copy ./persist while the stack is stopped,
+# or use "Download -> Download document" in Grist.
+#
+# Networking: by default the sync runs in Docker's bridge network and reaches
+# FRM on the host via host.docker.internal (works on Docker Desktop for
+# Windows/macOS and on Linux without a blocking firewall). Linux hosts whose
+# firewall (e.g. ufw) blocks bridge-to-host traffic add
+# docker-compose.hostnet.yml, see README.
 
 services:
 
@@ -26,50 +28,45 @@ services:
     container_name: satisfactory-grist
     restart: unless-stopped
     environment:
-      - TZ=${TZ}                                  # Zeitzone fuer Logs und Zeitstempel
-      - GRIST_DEFAULT_EMAIL=${GRIST_DEFAULT_EMAIL}  # Benutzer fuer alle Anfragen ohne Login
-      - GRIST_IN_SERVICE=true                     # Quick-Setup ueberspringen
-      - GRIST_SINGLE_ORG=docs                     # nur das persoenliche Team, kein Site-Wechsel
-      - GRIST_ORG_IN_PATH=true                    # Org im Pfad statt als Subdomain
+      - TZ=${TZ}                                  # time zone for logs and timestamps
+      - GRIST_DEFAULT_EMAIL=${GRIST_DEFAULT_EMAIL}  # identity for requests without login
+      - GRIST_IN_SERVICE=true                     # skip the quick-setup wizard
+      - GRIST_SINGLE_ORG=docs                     # personal site only, no site switching
+      - GRIST_ORG_IN_PATH=true                    # org in the URL path, not as subdomain
       - GRIST_HIDE_UI_ELEMENTS=billing,createSite,multiSite,multiAccounts,supportGrist,tutorials
       - GRIST_TELEMETRY_LEVEL=off
-      - GRIST_DEFAULT_LOCALE=de
+      - GRIST_DEFAULT_LOCALE=en
     ports:
-      - ${GRIST_BIND}:${GRIST_PORT}:8484          # Web-UI und REST-API
+      - ${GRIST_BIND}:${GRIST_PORT}:8484          # web UI and REST API
     volumes:
-      - ./persist:/persist                        # home.sqlite3 und docs/*.grist
+      - ./persist:/persist                        # home.sqlite3 and docs/*.grist
 
   # ---------------------------------------------------------------------
-  # FRM-Sync - liest den Ist-Zustand aus dem Spiel (Ficsit Remote
-  # Monitoring) und schreibt ihn in die Grist-Tabellen Spiel_*.
+  # frm-sync - reads stations, platforms and trains from FRM and writes
+  # them into Grist every SYNC_INTERVAL seconds.
   #
-  # Unabhaengig von Grist: Grist hat kein depends_on auf diesen Dienst.
-  # Ist FRM nicht erreichbar, bleibt der letzte Stand stehen und
-  # Sync_Status zeigt "FRM nicht erreichbar". Der Dienst stuerzt nicht ab.
+  # Independent of Grist: Grist does not depend on this service. If FRM is
+  # unreachable, the last data stays and Sync_Status says so. The service
+  # never crashes on errors.
   #
-  # network_mode: host, weil eine Host-Firewall (z.B. ufw) Verbindungen aus dem
-  # Docker-Bridge-Netz zum Host blockiert. FRM laeuft im Spiel (Wine) auf
-  # dem Host, Port 8080; ueber host-gateway lief die Verbindung in den
-  # Timeout. Im Host-Netz erreicht der Container FRM und Grist ueber die
-  # Host-Adressen, ohne Firewall-Regel.
-  #
-  # Kein eigenes Image: python:alpine plus das Skript als Read-only-Mount,
-  # nur Standardbibliothek. Aenderungen am Skript: docker compose restart
-  # satisfactory-frm-sync.
+  # No custom image: python:alpine plus the script as read-only mount,
+  # standard library only. After editing the script:
+  # docker compose restart satisfactory-frm-sync
   # ---------------------------------------------------------------------
   satisfactory-frm-sync:
     image: python:${PYTHON_TAG}
     container_name: satisfactory-frm-sync
     restart: unless-stopped
-    init: true                                    # sauberes Signal-Handling, schneller Stop
-    network_mode: host
+    init: true                                    # proper signal handling, fast stop
     command: ["python", "-u", "/app/sync.py"]
+    extra_hosts:
+      - host.docker.internal:host-gateway         # host address on Linux (built in on Docker Desktop)
     environment:
       - TZ=${TZ}
-      - FRM_URL=${FRM_URL}                        # FRM-Webserver im Spiel
-      - GRIST_URL=http://${GRIST_BIND}:${GRIST_PORT}
-      - GRIST_DOC_ID=${GRIST_DOC_ID}              # Dokument "Satisfactory Eden"
-      - GRIST_API_KEY=${GRIST_API_KEY}            # Grist: Profile Settings -> API Key
-      - SYNC_INTERVAL=${SYNC_INTERVAL}            # Sekunden zwischen zwei Abfragen
+      - FRM_URL=${FRM_URL}                        # FRM web server in the game
+      - GRIST_URL=http://satisfactory-grist:8484  # Grist inside the compose network
+      - GRIST_DOC_ID=${GRIST_DOC_ID}              # Grist document ID
+      - GRIST_API_KEY=${GRIST_API_KEY}            # Grist: Profile Settings -> API key
+      - SYNC_INTERVAL=${SYNC_INTERVAL}            # seconds between two syncs
     volumes:
       - ./frm-sync/sync.py:/app/sync.py:ro

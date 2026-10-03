@@ -24,6 +24,7 @@ the game cannot know: **which product goes where, and how much**.
 - [Configuration](#configuration)
 - [Operation](#operation)
 - [Limitations](#limitations)
+- [Disclaimer](#disclaimer)
 
 ---
 
@@ -72,8 +73,8 @@ Loading or Unloading. In Grist you then only add deliveries and the amounts.
 
 ### Open Grist
 
-Go to `http://127.0.0.1:8484` and click **Sign in**. In single-user mode no
-password is needed. Open the document **Satisfactory**.
+Go to `http://localhost:8484` and click **Sign in**. In single-user mode no
+password is needed. Open your document (imported from the template, see [Installation](#installation)).
 
 ### A new station
 
@@ -184,42 +185,49 @@ reachable*, and all data stays at the last successful read.
 
 - Satisfactory (1.0 or later) with the **Ficsit Remote Monitoring** mod,
   installed for example with the [Satisfactory Mod Manager](https://smm.ficsit.app/)
-- Docker with the Compose plugin
-- The sync service has to reach the FRM web server, by default on
-  port `8080` of the machine that runs the game
+- Docker with the Compose plugin:
+  - **Windows / macOS:** [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+    (on Windows with the WSL 2 backend, the default)
+  - **Linux:** Docker Engine with the Compose plugin
+- Grist and the sync run on the PC that runs the game, or on a machine in the
+  same network that can reach FRM's port `8080`
 
 ### 1. Enable the FRM web server
 
-Start the FRM web server in the game; how depends on your FRM version, see
+Start the FRM web server in the game. How depends on your FRM version, see
 the mod's documentation. Check that it answers:
 
 ```bash
-curl http://127.0.0.1:8080/getTrainStation
+curl http://localhost:8080/getTrainStation
 ```
 
-You should get a JSON list of your stations.
+On Windows run this in PowerShell; use `curl.exe` instead of `curl` there.
+You should get a JSON list of your stations. If Windows asks whether
+Satisfactory may accept network connections, allow it for private
+networks, otherwise Docker cannot reach FRM.
 
 ### 2. Get the files
 
 ```bash
-git clone <this repository> satisfactory-trains
-cd satisfactory-trains
+git clone https://github.com/Gunsi1973/satisfactory-logistics-helper.git
+cd satisfactory-logistics-helper
 cp .env.example .env
-mkdir -p persist
 ```
 
-### 3. Start Grist
+On Windows use `copy .env.example .env`. On Linux also run `mkdir -p persist`.
+
+### 3. Start Grist and import the template
 
 ```bash
 docker compose up -d satisfactory-grist
 ```
 
-Open `http://127.0.0.1:8484` and click **Sign in**. Then import the document
-template: **Add New → Import document** and choose
-`template/satisfactory-trains.grist`.
-
-The document ID is the part after `/o/docs/` in the URL of the opened
-document. Put it into `.env` as `GRIST_DOC_ID`.
+1. Open `http://localhost:8484` and click **Sign in**.
+2. **Add New → Import document** and choose
+   `template/satisfactory-logistics-helper.grist`.
+3. Copy the document ID from the browser's address bar: the part after
+   `/o/docs/`, e.g. `http://localhost:8484/o/docs/`**`abc123XYZ`**`/...`.
+   Put it into `.env` as `GRIST_DOC_ID`.
 
 ### 4. Create an API key for the sync
 
@@ -229,16 +237,21 @@ Create**. Copy the key into `.env` as `GRIST_API_KEY`.
 ### 5. Start the sync
 
 ```bash
-docker compose up -d satisfactory-frm-sync
+docker compose up -d
 docker logs -f satisfactory-frm-sync
 ```
 
 Expected output:
 
 ```
-Start: FRM http://127.0.0.1:8080 -> Grist http://127.0.0.1:8484 (...)
-OK: 3 Bahnhoefe, 16 Plattformen, 2 Zuege
+Start: FRM http://host.docker.internal:8080 -> Grist http://satisfactory-grist:8484 (document ...), interval 120s
+OK: 3 stations, 16 platforms, 2 trains (16 new slots)
 ```
+
+Your stations appear in Grist right away.
+
+If you see `FRM not reachable`, check that the game is running with the FRM
+web server, then check your firewall (see [Networking](#networking)).
 
 ---
 
@@ -254,22 +267,40 @@ All settings live in `.env`:
 | `GRIST_PORT` | `8484` | Grist port |
 | `GRIST_DEFAULT_EMAIL` | – | Identity used for "Sign in" in single-user mode |
 | `PYTHON_TAG` | `3.13-alpine` | Image for the sync service |
-| `FRM_URL` | `http://127.0.0.1:8080` | FRM web server |
+| `FRM_URL` | `http://host.docker.internal:8080` | FRM web server, seen from inside the container |
 | `SYNC_INTERVAL` | `120` | Seconds between two syncs |
 | `GRIST_DOC_ID` | – | ID of the Grist document |
 | `GRIST_API_KEY` | – | Grist API key for the sync |
+| `COMPOSE_FILE` | – | Only for Linux with a blocking firewall, see below |
 
 ### Networking
 
-The sync container uses `network_mode: host`. On a Linux host with a
-firewall (ufw), traffic from Docker's bridge network to the host is often
-blocked. With host networking the container reaches FRM and Grist at
-`127.0.0.1` without a firewall rule.
+By default the sync container runs in Docker's normal (bridge) network and
+reaches the game via `host.docker.internal`:
 
-On **Docker Desktop (Windows/macOS)**, host networking behaves differently.
-In `docker-compose.yml`, remove `network_mode: host` from the sync service and
-change its `GRIST_URL` to `http://satisfactory-grist:8484`. In `.env`, set
-`FRM_URL=http://host.docker.internal:8080`. This setup is untested.
+- **Windows / macOS (Docker Desktop):** works as is. `host.docker.internal`
+  points to your PC. Windows Defender Firewall may still block the game's
+  port 8080. In that case allow Satisfactory for private networks, or add
+  an inbound rule for TCP port 8080.
+- **Linux without firewall:** works as is. Compose maps
+  `host.docker.internal` to the host.
+- **Linux with a firewall that blocks Docker → host traffic (e.g. ufw):**
+  the log shows `FRM not reachable (timed out)`. Run the sync in the host
+  network instead by enabling these two lines in `.env`:
+
+  ```
+  COMPOSE_FILE=docker-compose.yml:docker-compose.hostnet.yml
+  FRM_URL=http://127.0.0.1:8080
+  ```
+
+  Then run `docker compose up -d`.
+
+**WSL 2 without Docker Desktop** (Docker Engine inside a Linux distribution,
+game on Windows) is not supported. In WSL's default network mode Windows is
+not reachable at a fixed address. If you want to try anyway, use WSL's
+*mirrored* networking mode and the host-network setup above.
+
+> The Windows setup has not yet been tested by a Windows user. Feedback welcome.
 
 ---
 
@@ -280,6 +311,7 @@ change its `GRIST_URL` to `http://satisfactory-grist:8484`. In `.env`, set
 | Status | `docker compose ps` |
 | Sync log | `docker logs --tail 20 satisfactory-frm-sync` |
 | Test FRM without writing anything | `docker compose run --rm satisfactory-frm-sync python /app/sync.py --dry-run` |
+| New empty document | import `template/satisfactory-logistics-helper.grist` again and update `GRIST_DOC_ID` |
 | Restart after editing `frm-sync/sync.py` | `docker compose restart satisfactory-frm-sync` |
 | Apply `.env` changes | `docker compose up -d` |
 | Stop everything | `docker compose down` |
@@ -309,3 +341,11 @@ normal user; deleting needs root.
 - **The overview shows 12 slots per station.** Longer stations are still
   synced and checked, they only lack overview columns.
 - **Single-user setup.** Keep Grist on `127.0.0.1` or behind authentication.
+
+---
+
+## Disclaimer
+
+This is a fan project. It is not affiliated with or endorsed by Coffee Stain
+Studios. Satisfactory is a trademark of Coffee Stain Studios. Ficsit Remote
+Monitoring and Grist are separate projects by their respective authors.

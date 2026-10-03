@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
-"""FRM -> Grist Sync fuer das Satisfactory-Bahnhof-Tracking.
+"""Satisfactory Logistics Helper - FRM -> Grist sync.
 
-Liest periodisch den Ist-Zustand aus dem Spiel ueber die Ficsit Remote
-Monitoring (FRM) Schnittstelle und pflegt damit in Grist:
+Periodically reads the live state of the game through the Ficsit Remote
+Monitoring (FRM) mod and maintains these Grist tables:
 
-  Bahnhoefe   Name, Plattformen, Im_Spiel, Anzahl_im_Spiel, Zuletzt_gesehen
-  Slots       Bahnhof, Slot, Modus, Inhalt, Bestand, Ladestatus, Im_Spiel,
-              Spiel_ID und - nur bei Load mit genau einem Produkt - Ladegut
-  Produkte    neue Produktnamen aus dem Spiel werden ergaenzt
-  Spiel_Zuege wird bei jedem Lauf vollstaendig abgeglichen
-  Sync_Status eine Zeile mit Status und Zeitstempeln
+  Stations     Name, Platforms, In_Game, Count_In_Game, Last_Seen
+  Slots        Station, Slot, Mode, Content, Stock, Load_Status, In_Game,
+               Game_ID and - only for Load with exactly one product - Load_Product
+  Products     product names seen in the game are added
+  Game_Trains  fully reconciled on every run
+  Sync_Status  one row with status and timestamps
 
-Nie angefasst: Lieferungen, sowie die manuellen Felder Menge und Notiz.
+Never touched: Deliveries, and the manual fields Amount and Note.
 
-Identitaet: Bahnhof = Name, Slot = (Bahnhof, Nummer). Die Spiel-IDs aendern
-sich beim Neubau oder Verlaengern eines Bahnhofs und werden nur zur
-Information gespeichert. Slot-Nummer = Rang der Plattform nach Abstand zum
-Bahnhofsgebaeude (naechste = 1).
+Identity: station = name, slot = (station, number). The game's object IDs
+change when a station is rebuilt or extended; they are stored for
+information only. Slot number = rank of the platform by distance from the
+station building (closest = 1).
 
-Verschwindet ein Bahnhof oder eine Plattform aus dem Spiel:
-  - haengen manuelle Daten dran (Menge, Notiz, Lieferung, verbliebene
-    Slots), wird die Zeile nur als "nicht mehr im Spiel" markiert,
-  - sonst wird sie geloescht.
+When a station or platform disappears from the game:
+  - if manual data is attached (amount, note, delivery, remaining slots),
+    the row is only flagged as not in game,
+  - otherwise it is deleted.
 
-Ist FRM nicht erreichbar oder liefert es keine Bahnhoefe, wird nichts
-geaendert ausser Sync_Status. Grist haengt nicht von diesem Skript ab.
+If FRM is unreachable or returns no stations, nothing but Sync_Status is
+changed. Grist does not depend on this script.
 
-Nur Python-Standardbibliothek.
+Python standard library only.
 """
 import json
 import math
@@ -84,7 +84,7 @@ def add(table, rows):
 
 
 def update(table, rows):
-    """rows: Liste von (id, fields). Grist verlangt pro PATCH identische Feldnamen, daher gruppiert."""
+    """rows: list of (id, fields). Grist requires identical field names per PATCH, hence grouping."""
     groups = {}
     for rid, f in rows:
         groups.setdefault(tuple(sorted(f)), []).append((rid, f))
@@ -100,7 +100,7 @@ def delete(table, ids):
 
 
 # ---------------------------------------------------------------------------
-# FRM-Daten aufbereiten
+# Read FRM data
 # ---------------------------------------------------------------------------
 
 def inventory(items):
@@ -111,11 +111,11 @@ def inventory(items):
 
 
 def transform(stations, trains):
-    """Liefert (bahnhoefe, zuege).
+    """Returns (stations, trains).
 
-    bahnhoefe: {Name: {"anzahl", "id", "plattformen": [slot-dicts]}}
-    Bei mehreren gleichnamigen Bahnhoefen gewinnt der mit den meisten
-    Plattformen; die Anzahl wird gemeldet.
+    stations: {name: {"count", "id", "platforms": [slot dicts]}}
+    If several stations share a name, the one with the most platforms wins;
+    the count is reported.
     """
     result = {}
     for s in stations:
@@ -127,17 +127,17 @@ def transform(stations, trains):
             inv = inventory(p.get("Inventory"))
             slots.append({
                 "Slot": i,
-                "Modus": MODE.get(p.get("LoadingMode"), p.get("LoadingMode") or ""),
-                "Inhalt": ", ".join(sorted(inv)), "Bestand": sum(inv.values()),
-                "Ladestatus": p.get("LoadingStatus") or "", "Spiel_ID": p["ID"],
-                "_produkte": sorted(inv),
+                "Mode": MODE.get(p.get("LoadingMode"), p.get("LoadingMode") or ""),
+                "Content": ", ".join(sorted(inv)), "Stock": sum(inv.values()),
+                "Load_Status": p.get("LoadingStatus") or "", "Game_ID": p["ID"],
+                "_products": sorted(inv),
             })
         prev = result.get(s["Name"])
-        entry = {"anzahl": 1, "id": s["ID"], "plattformen": slots}
+        entry = {"count": 1, "id": s["ID"], "platforms": slots}
         if prev:
-            entry["anzahl"] = prev["anzahl"] + 1
-            if len(prev["plattformen"]) >= len(slots):
-                entry.update(id=prev["id"], plattformen=prev["plattformen"])
+            entry["count"] = prev["count"] + 1
+            if len(prev["platforms"]) >= len(slots):
+                entry.update(id=prev["id"], platforms=prev["platforms"])
         result[s["Name"]] = entry
 
     train_rows = []
@@ -146,76 +146,76 @@ def transform(stations, trains):
         parts = []
         for i, v in enumerate(wagons, 1):
             inv = inventory(v.get("Inventory"))
-            parts.append("%d: %s" % (i, ", ".join("%s %g" % (k, n) for k, n in sorted(inv.items())) or "leer"))
+            parts.append("%d: %s" % (i, ", ".join("%s %g" % (k, n) for k, n in sorted(inv.items())) or "empty"))
         train_rows.append({
-            "Name": t.get("Name") or "", "Spiel_ID": t["ID"],
-            "Fahrplan": u" \u2192 ".join(x.get("StationName", "?") for x in t.get("TimeTable") or []),
-            "Status": t.get("Status") or "", "Aktueller_Halt": t.get("TrainStation") or "",
-            "Wagen": "\n".join(parts),
+            "Name": t.get("Name") or "", "Game_ID": t["ID"],
+            "Timetable": u" \u2192 ".join(x.get("StationName", "?") for x in t.get("TimeTable") or []),
+            "Status": t.get("Status") or "", "Current_Stop": t.get("TrainStation") or "",
+            "Wagons": "\n".join(parts),
         })
     return result, train_rows
 
 
 # ---------------------------------------------------------------------------
-# Grist abgleichen
+# Reconcile Grist
 # ---------------------------------------------------------------------------
 
 def sync_products(game):
-    have = {r["fields"]["Name"]: r["id"] for r in records("Produkte")}
-    needed = sorted({p for st in game.values() for s in st["plattformen"] for p in s["_produkte"]} - set(have))
+    have = {r["fields"]["Name"]: r["id"] for r in records("Products")}
+    needed = sorted({p for st in game.values() for s in st["platforms"] for p in s["_products"]} - set(have))
     if needed:
-        for name, rid in zip(needed, add("Produkte", [{"Name": n} for n in needed])):
+        for name, rid in zip(needed, add("Products", [{"Name": n} for n in needed])):
             have[name] = rid
-        log("Neue Produkte: %s" % ", ".join(needed))
+        log("New products: %s" % ", ".join(needed))
     return have
 
 
 def sync_stations(game, now):
-    existing = {r["fields"]["Name"]: r for r in records("Bahnhoefe")}
+    existing = {r["fields"]["Name"]: r for r in records("Stations")}
     new = [n for n in game if n not in existing]
     ids = {n: r["id"] for n, r in existing.items()}
     if new:
-        for n, rid in zip(new, add("Bahnhoefe", [{"Name": n} for n in new])):
+        for n, rid in zip(new, add("Stations", [{"Name": n} for n in new])):
             ids[n] = rid
-        log("Neue Bahnhoefe: %s" % ", ".join(new))
-    update("Bahnhoefe", [(ids[n], {"Plattformen": len(st["plattformen"]), "Im_Spiel": True,
-                                   "Anzahl_im_Spiel": st["anzahl"], "Zuletzt_gesehen": now})
-                         for n, st in game.items()])
+        log("New stations: %s" % ", ".join(new))
+    update("Stations", [(ids[n], {"Platforms": len(st["platforms"]), "In_Game": True,
+                                  "Count_In_Game": st["count"], "Last_Seen": now})
+                        for n, st in game.items()])
     return ids, existing
 
 
 def sync_slots(game, station_ids, products):
-    existing = {(r["fields"]["Bahnhof"], r["fields"]["Slot"]): r for r in records("Slots")}
+    existing = {(r["fields"]["Station"], r["fields"]["Slot"]): r for r in records("Slots")}
     seen, to_add, to_update = set(), [], []
     for name, st in game.items():
-        bid = station_ids[name]
-        for s in st["plattformen"]:
-            key = (bid, s["Slot"])
+        sid = station_ids[name]
+        for s in st["platforms"]:
+            key = (sid, s["Slot"])
             seen.add(key)
             fields = {k: v for k, v in s.items() if not k.startswith("_")}
-            fields["Im_Spiel"] = True
-            if s["Modus"] == "Load" and len(s["_produkte"]) == 1:
-                fields["Ladegut"] = products[s["_produkte"][0]]
+            fields["In_Game"] = True
+            if s["Mode"] == "Load" and len(s["_products"]) == 1:
+                fields["Load_Product"] = products[s["_products"][0]]
             if key in existing:
                 old = existing[key]["fields"]
                 if any(old.get(k) != v for k, v in fields.items()):
                     to_update.append((existing[key]["id"], fields))
             else:
-                fields.update(Bahnhof=bid, Slot=s["Slot"])
+                fields.update(Station=sid, Slot=s["Slot"])
                 to_add.append(fields)
     add("Slots", to_add)
     update("Slots", to_update)
 
-    # Slots, die im Spiel nicht mehr existieren
-    used_as_source = {r["fields"]["Quelle"] for r in records("Lieferungen")}
+    # Slots that no longer exist in the game
+    used_as_source = {r["fields"]["Source"] for r in records("Deliveries")}
     drop, mark = [], []
     for key, r in existing.items():
         if key in seen:
             continue
         f = r["fields"]
-        if f.get("Menge") or f.get("Notiz") or r["id"] in used_as_source:
-            if f.get("Im_Spiel") is not False:
-                mark.append((r["id"], {"Im_Spiel": False}))
+        if f.get("Amount") or f.get("Note") or r["id"] in used_as_source:
+            if f.get("In_Game") is not False:
+                mark.append((r["id"], {"In_Game": False}))
         else:
             drop.append(r["id"])
     update("Slots", mark)
@@ -227,33 +227,33 @@ def retire_stations(game, existing):
     gone = [r for n, r in existing.items() if n not in game]
     if not gone:
         return 0
-    slot_owner = {r["fields"]["Bahnhof"] for r in records("Slots")}
-    targets = {r["fields"]["Nach"] for r in records("Lieferungen")}
+    slot_owner = {r["fields"]["Station"] for r in records("Slots")}
+    targets = {r["fields"]["To"] for r in records("Deliveries")}
     drop, mark = [], []
     for r in gone:
-        if r["fields"].get("Notiz") or r["id"] in slot_owner or r["id"] in targets:
-            if r["fields"].get("Im_Spiel") is not False:
-                mark.append((r["id"], {"Im_Spiel": False}))
+        if r["fields"].get("Note") or r["id"] in slot_owner or r["id"] in targets:
+            if r["fields"].get("In_Game") is not False:
+                mark.append((r["id"], {"In_Game": False}))
         else:
             drop.append(r["id"])
-    update("Bahnhoefe", mark)
-    delete("Bahnhoefe", drop)
+    update("Stations", mark)
+    delete("Stations", drop)
     return len(gone)
 
 
 def sync_trains(rows):
-    existing = {r["fields"]["Spiel_ID"]: r["id"] for r in records("Spiel_Zuege")}
-    want = {r["Spiel_ID"] for r in rows}
-    add("Spiel_Zuege", [r for r in rows if r["Spiel_ID"] not in existing])
-    update("Spiel_Zuege", [(existing[r["Spiel_ID"]], r) for r in rows if r["Spiel_ID"] in existing])
-    delete("Spiel_Zuege", [rid for sid, rid in existing.items() if sid not in want])
+    existing = {r["fields"]["Game_ID"]: r["id"] for r in records("Game_Trains")}
+    want = {r["Game_ID"] for r in rows}
+    add("Game_Trains", [r for r in rows if r["Game_ID"] not in existing])
+    update("Game_Trains", [(existing[r["Game_ID"]], r) for r in rows if r["Game_ID"] in existing])
+    delete("Game_Trains", [rid for gid, rid in existing.items() if gid not in want])
 
 
 def set_status(status, success):
     now = time.time()
-    fields = {"Status": status, "Letzter_Versuch": now}
+    fields = {"Status": status, "Last_Attempt": now}
     if success:
-        fields["Letzter_Erfolg"] = now
+        fields["Last_Success"] = now
     existing = records("Sync_Status")
     if existing:
         update("Sync_Status", [(existing[0]["id"], fields)])
@@ -266,12 +266,12 @@ def sync_once():
         stations = frm("getTrainStation")
         trains = frm("getTrains")
     except (urllib.error.URLError, OSError, ValueError) as e:
-        msg = "FRM nicht erreichbar (%s) - Daten vom letzten Erfolg bleiben stehen" % getattr(e, "reason", e)
+        msg = "FRM not reachable (%s) - keeping data from the last successful sync" % getattr(e, "reason", e)
         log(msg)
         set_status(msg, False)
         return
     if not stations:
-        msg = "FRM liefert keine Bahnhoefe (Spiel noch am Laden?) - Daten bleiben stehen"
+        msg = "FRM returned no stations (game still loading?) - keeping data"
         log(msg)
         set_status(msg, False)
         return
@@ -282,18 +282,18 @@ def sync_once():
     added, retired = sync_slots(game, station_ids, products)
     gone = retire_stations(game, existing_stations)
     sync_trains(train_rows)
-    n_slots = sum(len(s["plattformen"]) for s in game.values())
-    msg = "OK: %d Bahnhoefe, %d Plattformen, %d Zuege" % (len(game), n_slots, len(train_rows))
+    n_slots = sum(len(s["platforms"]) for s in game.values())
+    msg = "OK: %d stations, %d platforms, %d trains" % (len(game), n_slots, len(train_rows))
     extra = []
     if added:
-        extra.append("%d Slots neu" % added)
+        extra.append("%d new slots" % added)
     if retired:
-        extra.append("%d Slots nicht mehr im Spiel" % retired)
+        extra.append("%d slots no longer in game" % retired)
     if gone:
-        extra.append("%d Bahnhoefe nicht mehr im Spiel" % gone)
-    dup = [n for n, s in game.items() if s["anzahl"] > 1]
+        extra.append("%d stations no longer in game" % gone)
+    dup = [n for n, s in game.items() if s["count"] > 1]
     if dup:
-        extra.append("Name mehrfach vergeben: %s" % ", ".join(dup))
+        extra.append("duplicate station names: %s" % ", ".join(dup))
     if extra:
         msg += " (" + "; ".join(extra) + ")"
     set_status(msg, True)
@@ -302,25 +302,25 @@ def sync_once():
 
 def main():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    if not GRIST_DOC or not GRIST_KEY or GRIST_KEY == "xxx":
-        log("GRIST_API_KEY fehlt in der .env - Sync pausiert. Key eintragen, dann: "
+    if not GRIST_DOC or not GRIST_KEY or GRIST_DOC == "xxx" or GRIST_KEY == "xxx":
+        log("GRIST_DOC_ID / GRIST_API_KEY missing in .env - sync paused. Set them, then run: "
             "docker compose up -d satisfactory-frm-sync")
         while True:
             time.sleep(3600)
-    log("Start: FRM %s -> Grist %s (Dokument %s), Intervall %ds" % (FRM_URL, GRIST_URL, GRIST_DOC, INTERVAL))
+    log("Start: FRM %s -> Grist %s (document %s), interval %ds" % (FRM_URL, GRIST_URL, GRIST_DOC, INTERVAL))
     while True:
         try:
             sync_once()
         except urllib.error.HTTPError as e:
-            log("Grist-Fehler %s: %s" % (e.code, e.read()[:300]))
-        except Exception as e:  # nie abstuerzen, naechster Versuch im naechsten Intervall
-            log("Fehler: %r" % (e,))
+            log("Grist error %s: %s" % (e.code, e.read()[:300]))
+        except Exception as e:  # never crash; retry on the next interval
+            log("Error: %r" % (e,))
         time.sleep(INTERVAL)
 
 
 if __name__ == "__main__":
     if "--dry-run" in sys.argv:
         g, t = transform(frm("getTrainStation"), frm("getTrains"))
-        print(json.dumps({"bahnhoefe": g, "zuege": t}, indent=1, ensure_ascii=False))
+        print(json.dumps({"stations": g, "trains": t}, indent=1, ensure_ascii=False))
     else:
         main()

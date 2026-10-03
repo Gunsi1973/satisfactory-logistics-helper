@@ -1,0 +1,18 @@
+# Optional override for Linux hosts whose firewall (e.g. ufw) blocks traffic
+# from Docker's bridge network to the host, so the sync cannot reach FRM via
+# host.docker.internal.
+#
+# The sync then runs in the host network and reaches FRM and Grist on the
+# host's own addresses. Enable it in .env:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.hostnet.yml
+#   FRM_URL=http://127.0.0.1:8080
+#
+# Do not use on Docker Desktop (Windows/macOS): host networking there means the
+# Docker VM, not your PC.
+
+services:
+  satisfactory-frm-sync:
+    network_mode: host
+    environment:
+      - GRIST_URL=http://${GRIST_BIND}:${GRIST_PORT}
