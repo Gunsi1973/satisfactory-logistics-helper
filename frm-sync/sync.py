@@ -4,9 +4,11 @@
 Periodically reads the live state of the game through the Ficsit Remote
 Monitoring (FRM) mod and maintains these Grist tables:
 
-  Stations     Name, Platforms, In_Game, Count_In_Game, Last_Seen
+  Stations     train stations and drone ports: Name, Type, Platforms, In_Game,
+               Count_In_Game, Last_Seen; drone ports also Paired_With
   Slots        Station, Slot, Mode, Content, Stock, Load_Status, In_Game,
-               Game_ID and - only for Load with exactly one product - Load_Product
+               Game_ID and - only for Load with exactly one product - Load_Product.
+               Drone ports always have two slots: 1 = send (Load), 2 = receive (Unload)
   Products     product names seen in the game are added
   Game_Vehicles  trains, trucks, drones - fully reconciled on every run
   Game_Ports     truck stations and drone ports - for information only
@@ -14,7 +16,7 @@ Monitoring (FRM) mod and maintains these Grist tables:
 
 Never touched: Deliveries, and the manual fields Amount and Note.
 
-Identity: station = name, slot = (station, number). The game's object IDs
+Identity: station = (type, name), slot = (station, number). The game's object IDs
 change when a station is rebuilt or extended; they are stored for
 information only. Slot number = rank of the platform by distance from the
 station building (closest = 1).
@@ -155,7 +157,7 @@ def inventory(items):
 def transform(stations, trains):
     """Returns (stations, trains).
 
-    stations: {name: {"count", "id", "platforms": [slot dicts]}}
+    stations: {("Train", name): {"count", "id", "platforms": [slot dicts], "paired"}}
     If several stations share a name, the one with the most platforms wins;
     the count is reported.
     """
@@ -174,13 +176,14 @@ def transform(stations, trains):
                 "Load_Status": p.get("LoadingStatus") or "", "Game_ID": p["ID"],
                 "_products": sorted(inv),
             })
-        prev = result.get(s["Name"])
-        entry = {"count": 1, "id": s["ID"], "platforms": slots}
+        key = ("Train", s["Name"])
+        prev = result.get(key)
+        entry = {"count": 1, "id": s["ID"], "platforms": slots, "paired": None}
         if prev:
             entry["count"] = prev["count"] + 1
             if len(prev["platforms"]) >= len(slots):
                 entry.update(id=prev["id"], platforms=prev["platforms"])
-        result[s["Name"]] = entry
+        result[key] = entry
 
     train_rows = []
     for t in trains:
@@ -196,6 +199,35 @@ def transform(stations, trains):
             "Cargo": "\n".join(parts), "Fuel": "",
         })
     return result, train_rows
+
+
+def transform_drones(ports):
+    """Drone ports as stations with two fixed slots: 1 = send (Load), 2 = receive (Unload).
+
+    Returns {("Drone", name): {"count", "id", "platforms", "paired"}}. "paired" is the
+    name of the port this port's drone flies to (from the game).
+    """
+    result = {}
+    for s in ports:
+        slots = []
+        for no, mode, inv_key, status in ((1, "Load", "InputInventory", s.get("DroneStatus") or ""),
+                                          (2, "Unload", "OutputInventory", "")):
+            inv = inventory(s.get(inv_key))
+            slots.append({
+                "Slot": no, "Mode": mode,
+                "Content": ", ".join(sorted(inv)), "Stock": sum(inv.values()),
+                "Load_Status": status, "Game_ID": "%s#%d" % (s["ID"], no),
+                "_products": sorted(inv),
+            })
+        key = ("Drone", s.get("Name") or "")
+        prev = result.get(key)
+        result[key] = {"count": (prev["count"] + 1) if prev else 1, "id": s["ID"], "platforms": slots,
+                       "paired": s.get("PairedStation") or None,
+                       "has_drone": (s.get("DroneStatus") or "No Drone") != "No Drone"}
+        if prev:  # duplicate name: keep the first one, report the count
+            result[key].update(id=prev["id"], platforms=prev["platforms"], paired=prev["paired"],
+                               has_drone=prev["has_drone"])
+    return result
 
 
 def fmt_items(items):
@@ -265,21 +297,31 @@ def sync_products(game):
     return have
 
 
+def station_key(r):
+    return (r["fields"].get("Type") or "Train", r["fields"]["Name"])
+
+
 def sync_stations(game, now):
-    existing = {r["fields"]["Name"]: r for r in records("Stations")}
-    new = [n for n in game if n not in existing]
-    ids = {n: r["id"] for n, r in existing.items()}
+    existing = {station_key(r): r for r in records("Stations")}
+    new = [k for k in game if k not in existing]
+    ids = {k: r["id"] for k, r in existing.items()}
     if new:
-        for n, rid in zip(new, add("Stations", [{"Name": n} for n in new])):
-            ids[n] = rid
-        log("New stations: %s" % ", ".join(new))
-    update("Stations", [(ids[n], {"Platforms": len(st["platforms"]), "In_Game": True,
-                                  "Count_In_Game": st["count"], "Last_Seen": now})
-                        for n, st in game.items()])
+        for k, rid in zip(new, add("Stations", [{"Name": k[1], "Type": k[0]} for k in new])):
+            ids[k] = rid
+        log("New stations: %s" % ", ".join("%s (%s)" % (k[1], k[0].lower()) for k in new))
+    rows = []
+    for k, st in game.items():
+        f = {"Platforms": len(st["platforms"]), "In_Game": True, "Count_In_Game": st["count"], "Last_Seen": now}
+        if k[0] == "Drone":
+            f["Paired_With"] = ids.get(("Drone", st["paired"]), 0) if st["paired"] else 0
+            f["Has_Drone"] = st["has_drone"]
+        rows.append((ids[k], f))
+    update("Stations", rows)
     return ids, existing
 
 
-def sync_slots(game, station_ids, products):
+def sync_slots(game, station_ids, products, keep_station_ids):
+    """keep_station_ids: stations whose type could not be read this time - their slots stay untouched."""
     existing = {(r["fields"]["Station"], r["fields"]["Slot"]): r for r in records("Slots")}
     seen, to_add, to_update = set(), [], []
     for name, st in game.items():
@@ -305,7 +347,7 @@ def sync_slots(game, station_ids, products):
     used_as_source = {r["fields"]["Source"] for r in records("Deliveries")}
     drop, mark = [], []
     for key, r in existing.items():
-        if key in seen:
+        if key in seen or key[0] in keep_station_ids:
             continue
         f = r["fields"]
         if f.get("Amount") or f.get("Note") or r["id"] in used_as_source:
@@ -318,8 +360,8 @@ def sync_slots(game, station_ids, products):
     return len(to_add), len(drop) + len(mark)
 
 
-def retire_stations(game, existing):
-    gone = [r for n, r in existing.items() if n not in game]
+def retire_stations(game, existing, fetched_types):
+    gone = [r for k, r in existing.items() if k not in game and k[0] in fetched_types]
     if not gone:
         return 0
     slot_owner = {r["fields"]["Station"] for r in records("Slots")}
@@ -343,6 +385,14 @@ def sync_by_game_id(table, rows):
     add(table, [r for r in rows if r["Game_ID"] not in existing])
     update(table, [(existing[r["Game_ID"]], r) for r in rows if r["Game_ID"] in existing])
     delete(table, [rid for gid, rid in existing.items() if gid not in want])
+
+
+def frm_try(endpoint):
+    """Like frm(), but None on failure (so "endpoint failed" differs from "nothing built")."""
+    try:
+        return frm(endpoint) or []
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
 
 
 def frm_optional(endpoint):
@@ -380,17 +430,24 @@ def sync_once():
         set_status(msg, False)
         return
     now = time.time()
+    drone_ports = frm_try("getDroneStation")
+    fetched_types = {"Train"} | ({"Drone"} if drone_ports is not None else set())
     game, train_rows = transform(stations, trains or [])
+    n_train, n_slots = len(game), sum(len(s["platforms"]) for s in game.values())
+    game.update(transform_drones(drone_ports or []))
     other_vehicles, port_rows = transform_other(frm_optional("getTruckStation"), frm_optional("getVehicles"),
-                                                frm_optional("getDroneStation"), frm_optional("getDrone"))
+                                                drone_ports or [], frm_optional("getDrone"))
     products = sync_products(game)
     station_ids, existing_stations = sync_stations(game, now)
-    added, retired = sync_slots(game, station_ids, products)
-    gone = retire_stations(game, existing_stations)
+    keep = {r["id"] for k, r in existing_stations.items() if k[0] not in fetched_types}
+    added, retired = sync_slots(game, station_ids, products, keep)
+    gone = retire_stations(game, existing_stations, fetched_types)
     sync_by_game_id("Game_Vehicles", train_rows + other_vehicles)
     sync_by_game_id("Game_Ports", port_rows)
-    n_slots = sum(len(s["platforms"]) for s in game.values())
-    msg = "OK: %d stations, %d platforms, %d trains" % (len(game), n_slots, len(train_rows))
+    msg = "OK: %d stations, %d platforms, %d trains, %d drone ports" % (
+        n_train, n_slots, len(train_rows), len(game) - n_train)
+    if drone_ports is None:
+        msg += " (drone ports not readable - kept)"
     if other_vehicles or port_rows:
         msg += ", %d other vehicles, %d truck stations/drone ports" % (len(other_vehicles), len(port_rows))
     extra = []
@@ -400,7 +457,7 @@ def sync_once():
         extra.append("%d slots no longer in game" % retired)
     if gone:
         extra.append("%d stations no longer in game" % gone)
-    dup = [n for n, s in game.items() if s["count"] > 1]
+    dup = ["%s (%s)" % (k[1], k[0].lower()) for k, s in game.items() if s["count"] > 1]
     if dup:
         extra.append("duplicate station names: %s" % ", ".join(dup))
     if extra:
@@ -439,6 +496,8 @@ def main():
 if __name__ == "__main__":
     if "--dry-run" in sys.argv:
         g, t = transform(frm("getTrainStation"), frm("getTrains"))
+        g.update(transform_drones(frm_optional("getDroneStation")))
+        g = {"%s: %s" % k: v for k, v in g.items()}
         ov, po = transform_other(frm_optional("getTruckStation"), frm_optional("getVehicles"),
                                  frm_optional("getDroneStation"), frm_optional("getDrone"))
         print(json.dumps({"stations": g, "vehicles": t + ov, "ports": po}, indent=1, ensure_ascii=False))

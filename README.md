@@ -72,10 +72,16 @@ unloaded on **platform 3** at the destination. This tool is built on that rule:
 - Every few minutes the sync service compares your plan with the game and
   flags anything that doesn't match.
 
+**Drone ports** work the same way with two fixed slots: **slot 1 = send**
+(the port's outgoing inventory, Load) and **slot 2 = receive** (incoming
+inventory, Unload). A drone delivery always goes from slot 1 of one port to
+slot 2 of the port its drone flies to. Which port that is comes from the game.
+
 ```
  Game (FRM mod) ──► frm-sync ──► Grist ◄── you (deliveries, amounts)
    stations,          every        plan + checks
    platforms,         2 min
+   drone ports,
    trains
 ```
 
@@ -85,14 +91,15 @@ unloaded on **platform 3** at the destination. This tool is built on that rule:
 
 | Data | Automatic (from the game) | Manual (you) |
 |---|---|---|
-| **Stations** | Created, updated, retired. Name, number of platforms, "in game" flag, last seen | Note |
-| **Slots** (platforms) | Created for every platform, any number per station. Slot number, Load/Unload mode, current content and stock | Amount per minute (production for Load, demand for Unload), note |
+| **Stations** (train stations and drone ports) | Created, updated, retired. Name, type, number of platforms, "in game" flag, last seen. Drone ports: destination port of its drone, whether a drone is built | Note |
+| **Slots** (platforms) | Created for every platform, any number per station; always 2 per drone port. Slot number, Load/Unload mode, current content and stock | Amount per minute (production for Load, demand for Unload), note |
 | **Load product** | Set as soon as the platform contains exactly one product. Kept when the platform runs empty | Only for a platform that has **never** held anything (pre-fill it) |
 | **Unload product** | Derived from the deliveries going to that slot | – |
-| **Deliveries** | Destination slot (same slot number at the destination station) | **Source slot, destination station, amount per minute**, train (optional), note |
+| **Deliveries** | Destination slot (trains: same slot number at the destination; drones: slot 2) | **Source slot, destination station, amount per minute**, train (optional), note |
 | **Products** | New product names seen in the game are added | – |
 | **Trains** | Name, timetable, current stop, cargo per wagon | – |
-| **Trucks, drones, truck stations, drone ports** | Listed for information: status, inventory, fuel, drone pairing | – (not part of the planning, see [Limitations](#limitations)) |
+| **Trucks, truck stations** | Listed for information: status, inventory, fuel | – (not part of the planning, see [Limitations](#limitations)) |
+| **Drones** | Listed for information: home port, destination, flight status | – |
 
 **In short:** build your stations in the game and set each platform to
 Loading or Unloading. In Grist you then only add deliveries and the amounts.
@@ -112,7 +119,8 @@ You don't have to do anything in Grist.
 
 1. Build the station in the game and give it a name.
 2. Set every freight platform to **Loading** or **Unloading**.
-3. Within about 2 minutes it appears on the **Stations** page, with one slot
+3. Within about 2 minutes it appears on the **Train Stations** page (drone
+   ports on **Drone Ports**), with one slot
    per platform.
 4. For Load slots, enter the **production per minute** in *Amount/min*.
 
@@ -129,6 +137,25 @@ The destination slot is filled in for you: the same slot number at the
 destination station. If the *Check* column shows anything other than `OK`,
 the game doesn't match yet, for example because that platform is still set to
 Loading. Fix it in the game; the error clears on the next sync.
+
+### A drone delivery
+
+1. In the game, set the destination of the drone on the sending port.
+2. On the **Deliveries** page add a row. **Source:** slot 1 of the sending
+   port, e.g. `Base (drone port) #1 ⬆ Fused Modular Frame`.
+3. **To:** the destination port. Only drone ports are offered.
+4. **Amount/min** and optionally a note.
+
+The destination slot is always slot 2 (receive). The check reports an error
+if the drone of the sending port flies somewhere else in the game, or if the
+port has no drone.
+
+> **Return flights:** a drone never flies back empty. At its destination it
+> picks up everything in that port's send slot and brings it home. If a port
+> sends goods *and* is the destination of other drones, those drones also take
+> its goods. The slot check warns about this (*return flight: …*). Planning
+> return flights is not supported: keep a port either sending to its own
+> destination, or receiving only.
 
 ### Demand at the destination
 
@@ -157,8 +184,9 @@ deliveries stay attached. Extra platforms appear as new slots.
 
 | Page | What you see |
 |---|---|
-| **Stations** | Overview with one row per station and columns Slot 1–12 (`⬆ product` = Load, `⬇ product` = Unload, `free` = no product yet). Free slots and a check per station. Selecting a station shows its slots plus its outgoing and incoming deliveries below. |
-| **Deliveries** | All deliveries. This is where you add new ones. |
+| **Train Stations** | Overview with one row per train station and columns Slot 1–12 (`⬆ product` = Load, `⬇ product` = Unload, `free` = no product yet). Free slots and a check per station. Selecting a station shows its slots plus its outgoing and incoming deliveries below. |
+| **Drone Ports** | One row per drone port: whether it has a drone, where its drone flies (*Sends to*), which drones fly here (*Receives from*), send and receive product. Selecting a port shows its two slots and its deliveries. |
+| **Deliveries** | All deliveries, trains and drones. This is where you add new ones. |
 | **Slots** | All slots of all stations, with game content, amounts, balance and checks. |
 | **Products** | Per product: total production, demand and transported amount, and which stations export it. |
 | **Game (FRM)** | Sync status (last successful read). All vehicles: trains with timetable and cargo per wagon (wagon number = slot number), trucks with fuel and the truck station they stand at, drones with their port pairing. All truck stations and drone ports with inventory and fuel. |
@@ -187,6 +215,10 @@ Problems are highlighted in red in the *Check* columns.
 | Delivery | X has no slot N | The destination station is too short for this slot number |
 | Delivery | destination slot already receives Y | Another product is already being delivered to that slot |
 | Delivery | source = destination | Source and destination station are the same |
+| Delivery | train cannot deliver to X / drone cannot deliver to X | Train slots deliver to train stations, drone ports to drone ports |
+| Delivery | drone of X flies to Y in game | The destination doesn't match the drone's destination set in the game |
+| Delivery | drone of X has no destination in game / X has no drone | Set a destination or build a drone on the sending port |
+| Slot | return flight: drones from X also take these goods | Drones from other ports land here and carry the send slot's goods back (see [A drone delivery](#a-drone-delivery)) |
 | Station | name used N× in game | Several stations in the game share this name (see below) |
 
 If the game is not running, nothing breaks. The sync status says *FRM not
@@ -196,14 +228,18 @@ reachable*, and all data stays at the last successful read.
 
 ## How the game is mapped
 
-- **A station is identified by its name.** The game gives each station an
-  internal ID, but that ID changes when the station is rebuilt or extended.
-  Matching by name makes rebuilds seamless.
+- **A station is identified by its type and name.** The game gives each
+  station an internal ID, but that ID changes when the station is rebuilt or
+  extended. Matching by name makes rebuilds seamless. A train station and a
+  drone port may share a name; drone ports are shown as *Name (drone port)*.
 - **Slot number** = position of the platform counted from the station
   building. The platform next to the building is slot 1. This matches the
   wagon order as long as all platforms are on the same side of the station
   building.
 - **Modes:** *Loading* maps to **Load**, *Unloading* to **Unload**.
+- **Drone ports:** the outgoing inventory is slot 1 (Load), the incoming
+  inventory slot 2 (Unload). *Sends to* is the destination of the drone built
+  on that port.
 - **Duplicate station names:** the station with the most platforms is used,
   and the duplicate is flagged. Give every station a unique name.
 
@@ -365,11 +401,14 @@ normal user; deleting needs root.
 - **An empty platform has no product.** The game has no product filter per
   platform; the product is only known once something is loaded. Pre-fill the
   load product by hand if needed.
-- **Trucks and drones are listed, not planned.** Deliveries and checks cover
-  trains only. FRM does not report whether a truck station loads or unloads
-  (it reports *Idle/Transferring* instead) and has no truck routes, so the
-  planning model can't use them yet. Drone ports report their pairing and
-  inventories, which may allow drone deliveries later.
+- **Trucks are listed, not planned.** FRM does not report whether a truck
+  station loads or unloads (it reports *Idle/Transferring* instead) and has no
+  truck routes, so the planning model can't use them.
+- **Drone return flights are not planned.** Drones carry the destination's
+  send slot back home; the tool only warns about it. Tested with one product
+  per drone port and empty return flights.
+- **Mixed cargo** (several products in one slot or drone port) is reported as
+  a warning; the product is then not set automatically.
 - **Platforms on both sides of the station building** break the slot
   numbering.
 - **The overview shows 12 slots per station.** Longer stations are still
