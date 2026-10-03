@@ -24,6 +24,7 @@ the game cannot know: **which product goes where, and how much**.
 - [Configuration](#configuration)
 - [Operation](#operation)
 - [Limitations](#limitations)
+- [License](#license)
 - [Disclaimer](#disclaimer)
 
 ---
@@ -341,6 +342,16 @@ normal user; deleting needs root.
 - **The overview shows 12 slots per station.** Longer stations are still
   synced and checked, they only lack overview columns.
 - **Single-user setup.** Keep Grist on `127.0.0.1` or behind authentication.
+
+---
+
+## License
+
+[MIT](LICENSE) - use it, change it, share it, also commercially. Just keep the
+copyright notice, so the original author stays credited.
+
+If this tool makes you money, it would be nice to buy the author a coffee. ☕
+Not required, just decent.
 
 ---
 
