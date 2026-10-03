@@ -4,3 +4,4 @@ backup/
 .~lock.*
 *.ods
 __pycache__/
+AGENTS.md
