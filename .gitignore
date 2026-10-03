@@ -1,0 +1,6 @@
+.env
+persist/
+backup/
+.~lock.*
+*.ods
+__pycache__/
