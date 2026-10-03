@@ -1,3 +1,5 @@
+![Satisfactory Logistics Helper: plan your transport network, the game fills in the rest](docs/banner.jpg)
+
 # Satisfactory Logistics Helper
 
 Plan and check the freight network of your Satisfactory factory in a
