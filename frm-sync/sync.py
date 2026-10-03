@@ -40,8 +40,11 @@ from datetime import datetime
 
 FRM_URL = os.environ.get("FRM_URL", "http://127.0.0.1:8080").rstrip("/")
 GRIST_URL = os.environ.get("GRIST_URL", "http://127.0.0.1:8484").rstrip("/")
+GRIST_PUBLIC_URL = os.environ.get("GRIST_PUBLIC_URL", "http://localhost:8484").rstrip("/")
 GRIST_DOC = os.environ.get("GRIST_DOC_ID", "")
 GRIST_KEY = os.environ.get("GRIST_API_KEY", "")
+DOC_NAME = os.environ.get("GRIST_DOC_NAME", "Satisfactory Logistics Helper")
+TEMPLATE = os.environ.get("GRIST_TEMPLATE", "/app/template/satisfactory-logistics-helper.grist")
 INTERVAL = int(os.environ.get("SYNC_INTERVAL", "120"))
 TIMEOUT = 15
 
@@ -69,6 +72,44 @@ def frm(endpoint):
 def grist(method, path, body=None):
     return http(method, "%s/api/docs/%s%s" % (GRIST_URL, GRIST_DOC, path), body,
                 {"Authorization": "Bearer " + GRIST_KEY})
+
+
+def grist_api(method, path, body=None):
+    return http(method, "%s/api%s" % (GRIST_URL, path), body, {"Authorization": "Bearer " + GRIST_KEY})
+
+
+def resolve_document():
+    """Use GRIST_DOC_ID if set. Otherwise find the document named DOC_NAME,
+    or import the bundled template once. Returns True when a document is known."""
+    global GRIST_DOC
+    if GRIST_DOC and GRIST_DOC != "xxx":
+        return True
+    workspaces = []
+    for org in grist_api("GET", "/orgs"):
+        workspaces += grist_api("GET", "/orgs/%d/workspaces" % org["id"])
+    for ws in workspaces:
+        for d in ws.get("docs") or []:
+            if d.get("name") == DOC_NAME and not d.get("removedAt"):
+                GRIST_DOC = d["id"]
+                log("Using document '%s': %s/o/docs/%s" % (DOC_NAME, GRIST_PUBLIC_URL, GRIST_DOC))
+                return True
+    if not workspaces:
+        log("No Grist workspace found for this API key")
+        return False
+    boundary = "----slh%d" % int(time.time() * 1000)
+    with open(TEMPLATE, "rb") as f:
+        payload = f.read()
+    body = b"".join([
+        ("--%s\r\nContent-Disposition: form-data; name=\"workspaceId\"\r\n\r\n%d\r\n" % (boundary, workspaces[0]["id"])).encode(),
+        ("--%s\r\nContent-Disposition: form-data; name=\"upload\"; filename=\"%s.grist\"\r\n"
+         "Content-Type: application/octet-stream\r\n\r\n" % (boundary, DOC_NAME)).encode(),
+        payload, ("\r\n--%s--\r\n" % boundary).encode()])
+    req = urllib.request.Request("%s/api/docs" % GRIST_URL, data=body, method="POST", headers={
+        "Authorization": "Bearer " + GRIST_KEY, "Content-Type": "multipart/form-data; boundary=" + boundary})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        GRIST_DOC = json.loads(r.read())
+    log("Created document '%s' from template: %s/o/docs/%s" % (DOC_NAME, GRIST_PUBLIC_URL, GRIST_DOC))
+    return True
 
 
 def records(table):
@@ -302,20 +343,29 @@ def sync_once():
 
 def main():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    if not GRIST_DOC or not GRIST_KEY or GRIST_DOC == "xxx" or GRIST_KEY == "xxx":
-        log("GRIST_DOC_ID / GRIST_API_KEY missing in .env - sync paused. Set them, then run: "
-            "docker compose up -d satisfactory-frm-sync")
+    if not GRIST_KEY or GRIST_KEY == "xxx":
+        log("GRIST_API_KEY missing in .env - sync paused. In Grist: avatar -> Profile Settings -> API -> Create, "
+            "put the key into .env, then run: docker compose up -d")
         while True:
             time.sleep(3600)
-    log("Start: FRM %s -> Grist %s (document %s), interval %ds" % (FRM_URL, GRIST_URL, GRIST_DOC, INTERVAL))
+    log("Start: FRM %s -> Grist %s, interval %ds" % (FRM_URL, GRIST_URL, INTERVAL))
+    once = "--once" in sys.argv
     while True:
+        wait = INTERVAL
         try:
-            sync_once()
+            if resolve_document():
+                sync_once()
+            else:
+                wait = 15
         except urllib.error.HTTPError as e:
             log("Grist error %s: %s" % (e.code, e.read()[:300]))
         except Exception as e:  # never crash; retry on the next interval
             log("Error: %r" % (e,))
-        time.sleep(INTERVAL)
+            if not GRIST_DOC or GRIST_DOC == "xxx":
+                wait = 15  # Grist probably still starting
+        if once:
+            return
+        time.sleep(wait)
 
 
 if __name__ == "__main__":

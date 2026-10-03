@@ -14,6 +14,7 @@ the game cannot know: **which product goes where, and how much**.
 
 ## Contents
 
+- [Quick start](#quick-start)
 - [How it works](#how-it-works)
 - [What is automatic, what is manual](#what-is-automatic-what-is-manual)
 - [Daily use](#daily-use)
@@ -26,6 +27,31 @@ the game cannot know: **which product goes where, and how much**.
 - [Limitations](#limitations)
 - [License](#license)
 - [Disclaimer](#disclaimer)
+
+---
+
+## Quick start
+
+You need: Satisfactory with the [Ficsit Remote Monitoring](https://ficsit.app/mod/FicsitRemoteMonitoring)
+mod, and [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/macOS) or Docker (Linux).
+
+1. **Game:** start Satisfactory, load your save, start the FRM web server.
+2. **Start it:**
+   ```bash
+   git clone https://github.com/Gunsi1973/satisfactory-logistics-helper.git
+   cd satisfactory-logistics-helper
+   cp .env.example .env        # Windows: copy .env.example .env
+   docker compose up -d
+   ```
+3. **API key:** open <http://localhost:8484>, click **Sign in**, then avatar →
+   **Profile Settings → API → Create**. Paste the key into `.env` as
+   `GRIST_API_KEY=...` and run `docker compose up -d` again.
+4. **Done.** Within a few seconds the document **Satisfactory Logistics
+   Helper** appears in Grist, filled with your stations. Add deliveries, see
+   [Daily use](#daily-use).
+
+Stations don't show up? Run `docker logs satisfactory-frm-sync`. If it says
+*FRM not reachable*, see [Networking](#networking).
 
 ---
 
@@ -75,7 +101,7 @@ Loading or Unloading. In Grist you then only add deliveries and the amounts.
 ### Open Grist
 
 Go to `http://localhost:8484` and click **Sign in**. In single-user mode no
-password is needed. Open your document (imported from the template, see [Installation](#installation)).
+password is needed. Open the document **Satisfactory Logistics Helper**.
 
 ### A new station
 
@@ -217,18 +243,13 @@ cp .env.example .env
 
 On Windows use `copy .env.example .env`. On Linux also run `mkdir -p persist`.
 
-### 3. Start Grist and import the template
+### 3. Start the stack
 
 ```bash
-docker compose up -d satisfactory-grist
+docker compose up -d
 ```
 
-1. Open `http://localhost:8484` and click **Sign in**.
-2. **Add New → Import document** and choose
-   `template/satisfactory-logistics-helper.grist`.
-3. Copy the document ID from the browser's address bar: the part after
-   `/o/docs/`, e.g. `http://localhost:8484/o/docs/`**`abc123XYZ`**`/...`.
-   Put it into `.env` as `GRIST_DOC_ID`.
+Open `http://localhost:8484` and click **Sign in**.
 
 ### 4. Create an API key for the sync
 
@@ -242,14 +263,18 @@ docker compose up -d
 docker logs -f satisfactory-frm-sync
 ```
 
+On the first run the sync imports `template/satisfactory-logistics-helper.grist`
+as the document **Satisfactory Logistics Helper**. Later runs find it by name.
+To use a different document, set its ID as `GRIST_DOC_ID` in `.env`.
+
 Expected output:
 
 ```
-Start: FRM http://host.docker.internal:8080 -> Grist http://satisfactory-grist:8484 (document ...), interval 120s
+Start: FRM http://host.docker.internal:8080 -> Grist http://satisfactory-grist:8484, interval 120s
+Created document 'Satisfactory Logistics Helper' from template: http://localhost:8484/o/docs/...
+New stations: ...
 OK: 3 stations, 16 platforms, 2 trains (16 new slots)
 ```
-
-Your stations appear in Grist right away.
 
 If you see `FRM not reachable`, check that the game is running with the FRM
 web server, then check your firewall (see [Networking](#networking)).
@@ -270,7 +295,7 @@ All settings live in `.env`:
 | `PYTHON_TAG` | `3.13-alpine` | Image for the sync service |
 | `FRM_URL` | `http://host.docker.internal:8080` | FRM web server, seen from inside the container |
 | `SYNC_INTERVAL` | `120` | Seconds between two syncs |
-| `GRIST_DOC_ID` | – | ID of the Grist document |
+| `GRIST_DOC_ID` | empty | Optional. Empty = use or create the document *Satisfactory Logistics Helper* |
 | `GRIST_API_KEY` | – | Grist API key for the sync |
 | `COMPOSE_FILE` | – | Only for Linux with a blocking firewall, see below |
 
@@ -312,7 +337,7 @@ not reachable at a fixed address. If you want to try anyway, use WSL's
 | Status | `docker compose ps` |
 | Sync log | `docker logs --tail 20 satisfactory-frm-sync` |
 | Test FRM without writing anything | `docker compose run --rm satisfactory-frm-sync python /app/sync.py --dry-run` |
-| New empty document | import `template/satisfactory-logistics-helper.grist` again and update `GRIST_DOC_ID` |
+| Start over with an empty document | rename or delete the document in Grist, then `docker compose restart satisfactory-frm-sync` |
 | Restart after editing `frm-sync/sync.py` | `docker compose restart satisfactory-frm-sync` |
 | Apply `.env` changes | `docker compose up -d` |
 | Stop everything | `docker compose down` |

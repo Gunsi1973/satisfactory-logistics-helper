@@ -65,8 +65,10 @@ services:
       - TZ=${TZ}
       - FRM_URL=${FRM_URL}                        # FRM web server in the game
       - GRIST_URL=http://satisfactory-grist:8484  # Grist inside the compose network
-      - GRIST_DOC_ID=${GRIST_DOC_ID}              # Grist document ID
+      - GRIST_PUBLIC_URL=http://localhost:${GRIST_PORT}  # only used for links in the log
+      - GRIST_DOC_ID=${GRIST_DOC_ID:-}            # optional; empty = find/create "Satisfactory Logistics Helper"
       - GRIST_API_KEY=${GRIST_API_KEY}            # Grist: Profile Settings -> API key
       - SYNC_INTERVAL=${SYNC_INTERVAL}            # seconds between two syncs
     volumes:
       - ./frm-sync/sync.py:/app/sync.py:ro
+      - ./template:/app/template:ro               # imported once if no document exists yet
